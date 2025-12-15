@@ -37,7 +37,6 @@ impl Uid
     }
 }
 
-
 #[derive(Serialize)]
 pub struct Ledger
 {
@@ -271,6 +270,18 @@ SrcId::Light(_) => {
         if self.next_surf_id >= self.next_matsurf_id {
             warn!("Surface ID and Material-Surface ID ranges are overlapping");
         }
+    }
+
+    fn get_next_map(&self) -> &HashMap<Uid, u32> {
+        &self.next
+    }
+
+    fn get_prev_map(&self) -> &HashMap<u32, Uid> {
+        &self.prev
+    }
+
+    fn get_src_map(&self) -> &HashMap<SrcId, Vec<String>> {
+        &self.src_map
     }
 }
 
