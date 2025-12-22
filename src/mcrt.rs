@@ -8,6 +8,7 @@ use serde::{Serialize, Deserialize};
 
 #[derive(Eq, PartialEq, Clone, Debug, Serialize, Deserialize, Hash)]
 pub enum SrcId {
+    None,
     Mat(u16),
     Surf(u16),
     MatSurf(u16),
@@ -17,6 +18,7 @@ pub enum SrcId {
 impl std::fmt::Display for SrcId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            SrcId::None        => write!(f, "None"),
             SrcId::Mat(id)     => write!(f, "Mat({})", id),
             SrcId::Surf(id)    => write!(f, "Surf({})", id),
             SrcId::MatSurf(id) => write!(f, "MatSurf({})", id),
@@ -37,6 +39,7 @@ impl RawField for SrcId {
     }
     fn encode(&self) -> u32 {
         match self {
+            SrcId::None        => 0u32,
             SrcId::Mat(id)     => *id as u32,
             SrcId::Surf(id)    => *id as u32,
             SrcId::MatSurf(id) => *id as u32,
@@ -49,6 +52,7 @@ impl Deref for SrcId {
     type Target = u16;
     fn deref(&self) -> &Self::Target {
         match self {
+            SrcId::None       => panic!("Cannot deref None SrcId"),
             Self::Mat(id)     => id,
             Self::Surf(id)    => id,
             Self::MatSurf(id) => id,

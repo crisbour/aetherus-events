@@ -5,7 +5,7 @@ use serde::{Serialize, Deserialize};
 use serde_with::{serde_as, DisplayFromStr};
 
 use crate::mcrt::SrcId;
-use crate::{EventId, RawEvent, Encode};
+use crate::{EventId, RawEvent, Encode, SrcName};
 use serde_json;
 use std::fs::File;
 
@@ -78,7 +78,7 @@ pub struct Ledger
 {
     grps:            HashMap<String, SrcId>, // Key: Group name
     #[serde_as(as = "HashMap<DisplayFromStr, _>")]
-    src_map:         HashMap<SrcId, Vec<String>>, // Value: Material name, object name, light name.
+    src_map:         HashMap<SrcId, Vec<SrcName>>, // Value: Material name, object name, light name.
 
     next_mat_id:     u16,
     next_surf_id:    u16,
@@ -113,6 +113,21 @@ impl Ledger
         }
     }
 
+    pub fn with_light(&mut self, light_name: String) -> SrcId {
+        let light_id = SrcId::Light(self.next_light_id);
+        self.next_light_id += 1;
+        match self.src_map.get_mut(&light_id) {
+            Some(_value) => {
+                panic!("Light ID {} already exists in src_map", *light_id);
+                //value.push(SrcName::Light(light_name))
+            },
+            None => {
+                self.src_map.insert(light_id.clone(), vec![SrcName::Light(light_name)]);
+            }
+        };
+        light_id
+    }
+
     pub fn with_surf(&mut self, obj_name: String, grp: Option<String>) -> SrcId {
         let src_id = if let Some(grp_name) = grp {
 
@@ -143,8 +158,11 @@ impl Ledger
 
                     SrcId::MatSurf(matsurf_id)
                 },
-SrcId::Light(_) => {
+                SrcId::Light(_) => {
                     panic!("Group name {} already used for a light source", grp_name);
+                },
+                SrcId::None => {
+                    panic!("Group name {} registered an invalid None source", grp_name);
                 },
             };
 
@@ -156,9 +174,9 @@ SrcId::Light(_) => {
         };
 
         match self.src_map.get_mut(&src_id) {
-            Some(value) => value.push(obj_name),
+            Some(value) => value.push(SrcName::Surf(obj_name)),
             None => {
-                self.src_map.insert(src_id.clone(), vec![obj_name]);
+                self.src_map.insert(src_id.clone(), vec![SrcName::Surf(obj_name)]);
             }
         };
 
@@ -175,9 +193,9 @@ SrcId::Light(_) => {
         self.next_mat_id += 1;
 
         match self.src_map.get_mut(&mat_id) {
-            Some(value) => value.push(mat_name),
+            Some(value) => value.push(SrcName::Mat(mat_name)),
             None => {
-                self.src_map.insert(mat_id.clone(), vec![mat_name]);
+                self.src_map.insert(mat_id.clone(), vec![SrcName::Mat(mat_name)]);
             }
         };
 
@@ -228,8 +246,11 @@ SrcId::Light(_) => {
 
                     SrcId::MatSurf(matsurf_id)
                 },
-SrcId::Light(_) => {
+                SrcId::Light(_) => {
                     panic!("Group name {} already used for a light source", grp_name);
+                },
+                SrcId::None => {
+                    panic!("Group name {} registered an invalid None source", grp_name);
                 },
             };
             grp_src_id
@@ -241,9 +262,9 @@ SrcId::Light(_) => {
 
         let matsurf_name = format!("{}:{}", obj_name, mat_name);
         match self.src_map.get_mut(&src_id) {
-            Some(value) => value.push(matsurf_name),
+            Some(value) => value.push(SrcName::MatSurf(matsurf_name)),
             None => {
-                self.src_map.insert(src_id.clone(), vec![matsurf_name]);
+                self.src_map.insert(src_id.clone(), vec![SrcName::MatSurf(matsurf_name)]);
             }
         };
 
@@ -279,10 +300,14 @@ SrcId::Light(_) => {
 
         let uid = Uid::new(new_event_seq_no, event.encode());
 
+        // FIXME: This is the only portion of the Ledger that needs to be accessed concurently.
+        // Then we should encapsulate this section to run it atomically, then the Ledger can
+        // implement Send + Sync traits safely without Arc<Mutex>
         if None == self.next.get(&uid) {
-            self.next.insert(uid.clone(), self.next_seq_id);
-            self.prev.insert(self.next_seq_id, uid.clone());
+            let next_event_seq_no = self.next_seq_id;
             self.next_seq_id += 1;
+            self.next.insert(uid.clone(), next_event_seq_no);
+            self.prev.insert(next_event_seq_no, uid.clone());
         }
 
         uid
@@ -324,7 +349,7 @@ SrcId::Light(_) => {
         &self.prev
     }
 
-    fn get_src_map(&self) -> &HashMap<SrcId, Vec<String>> {
+    fn get_src_map(&self) -> &HashMap<SrcId, Vec<SrcName>> {
         &self.src_map
     }
 }
@@ -333,7 +358,6 @@ SrcId::Light(_) => {
 mod tests {
     use super::*;
     use tempfile::tempdir;
-    use std::path::Path;
 
     #[test]
     fn produce_src_id() {
@@ -358,20 +382,20 @@ mod tests {
         for mat in mats {
             let src_id = ledger.with_mat(mat.clone());
             assert!(ledger.src_map.contains_key(&src_id));
-            assert_eq!(ledger.src_map.get(&src_id).unwrap(), &vec![mat.clone()]);
+            assert_eq!(ledger.src_map.get(&src_id).unwrap().iter().map(|src| src.to_string()).collect::<Vec<_>>(), vec![mat.clone()]);
         }
 
         for surf in surfs {
             let src_id = ledger.with_surf(surf.clone(), None);
             assert!(ledger.src_map.contains_key(&src_id));
-            assert_eq!(ledger.src_map.get(&src_id).unwrap(), &vec![surf.clone()]);
+            assert_eq!(ledger.src_map.get(&src_id).unwrap().iter().map(|src| src.to_string()).collect::<Vec<String>>(), vec![surf.clone()]);
         }
 
         for (obj, mat) in objects {
             let src_id = ledger.with_matsurf(obj.clone(), mat.clone(), None);
             assert!(ledger.src_map.contains_key(&src_id));
             let expected_name = format!("{}:{}", obj.clone(), mat.clone());
-            assert_eq!(ledger.src_map.get(&src_id).unwrap(), &vec![expected_name]);
+            assert_eq!(ledger.src_map.get(&src_id).unwrap().iter().map(|src| src.to_string()).collect::<Vec<String>>(), vec![expected_name]);
         }
 
         // Inspect the ledger

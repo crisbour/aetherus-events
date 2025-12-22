@@ -5,6 +5,7 @@ pub mod ledger;
 //mod filter;
 
 use raw::{Pipeline, RawField};
+use serde::{Deserialize, Serialize};
 
 // =======================================
 // Traits for encoding and decoding events
@@ -40,6 +41,27 @@ pub enum EventType {
 pub struct EventId {
     pub event_type: EventType,
     pub src_id:     u16,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub enum SrcName {
+    Light(String),
+    Surf(String),
+    MatSurf(String),
+    Mat(String),
+    Detector(String),
+}
+
+impl ToString for SrcName {
+    fn to_string(&self) -> String {
+        match self {
+            SrcName::Light(name) => name.clone(),
+            SrcName::Surf(name) => name.clone(),
+            SrcName::MatSurf(name) => name.clone(),
+            SrcName::Mat(name) => name.clone(),
+            SrcName::Detector(name) => name.clone(),
+        }
+    }
 }
 
 impl EventId {
