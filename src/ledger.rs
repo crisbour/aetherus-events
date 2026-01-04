@@ -379,9 +379,11 @@ impl Ledger {
 
     pub fn insert_start(&mut self, start_event: EventId) -> Uid {
         let uid = Uid::new(0, start_event.encode());
-        self.start_events.push(uid.clone());
 
-        self.insert_entry(uid.clone(), 1);
+        if self.insert_entry(uid.clone(), 1) {
+            self.start_events.push(uid.clone());
+        }
+
         if self.next_seq_id == 0 {
             self.next_seq_id = 2;
         }
