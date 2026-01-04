@@ -1,0 +1,294 @@
+use std::collections::VecDeque;
+/// Define a filtering scheme that can be composed by concatenation of various fields in the event
+/// bitfield description.
+///
+/// # Examples
+///
+/// 1. We could filter for all Scattering Events coming from a specific material with MatId as such
+/// ` filter_seq!(MCRT|Material|{Inelastic, Elastic}|*|*|MatId)`
+///
+/// 2. Filter for all interactions with objects that have SurfId(x) or MatId(x) described by
+///    MatSurfId(x)
+/// `filter_seq!(MCRT|*|*|MatSurfId)`
+///
+/// 3. Filter for events that have N number of interactions described by
+/// `
+/// use aetherus_events::filter_seq;
+/// filter_seq!([MCRT|Interface|Refraction|SurfId, MCRT|Material|{Inelastic, Elastic}|*|*|MatId, ... ]);
+/// `
+///
+/// 4. Filter for permutations of events
+/// `
+/// filter_seq!(perm![ MCRT|Interface|*|SurfId,
+///                    MCRT|Material|{Elastic, Inelastic}|*|*|MatId,
+///                    ... ])
+/// `
+
+/// Macro to create a filter specification using pipe-delimited syntax
+/// Single event filter:
+/// ```ignore
+/// filter_seq!(MCRT|Material|{Inelastic, Elastic}|*|*|MatId)
+/// ```
+///
+/// Sequence of events:
+/// ```ignore
+/// filter_seq!([MCRT|Interface|*|SurfId, MCRT|Material|{Inelastic, Elastic}|*|*|MatId])
+/// ```
+///
+/// Permutation (any order):
+/// ```ignore
+/// filter_perm![MCRT|Interface|*|SurfId, MCRT|Material|{Inelastic, Elastic}|*|*|MatId]
+/// ```
+use crate::ledger::{Ledger, Uid};
+
+#[derive(Debug, Clone, Copy)]
+pub struct BitsMatch {
+    pub mask: u32,
+    pub value: u32,
+}
+impl BitsMatch {
+    pub fn new(mask: u32, value: u32) -> Self {
+        BitsMatch { mask, value }
+    }
+}
+
+struct SeqQueueEntry {
+    pub uid: Uid,
+    pub bits_match_seq: VecDeque<BitsMatch>,
+}
+
+pub fn find_forward_uid_seq(ledger: &Ledger, bits_match_seq: Vec<BitsMatch>) -> Vec<Uid> {
+    let mut seq_queue: VecDeque<SeqQueueEntry> = VecDeque::new();
+    let mut found_uids: Vec<Uid> = Vec::new();
+    // Initialize the queue with all events that have seq_no=0
+    for uid in ledger.get_start_events() {
+        seq_queue.push_back(SeqQueueEntry {
+            uid: *uid,
+            bits_match_seq: bits_match_seq.clone().into(),
+        });
+    }
+    while !seq_queue.is_empty() {
+        let uid_seq = seq_queue.pop_front().unwrap();
+        if None == ledger.get_next_seq_id(&uid_seq.uid) {
+            // If last UID in sequence of events, output as valid UID
+            if uid_seq.bits_match_seq.is_empty() {
+                found_uids.push(uid_seq.uid);
+            }
+        } else {
+            for next_uid in ledger.get_next(&uid_seq.uid) {
+                let bits_match = uid_seq.bits_match_seq.front().unwrap();
+                let mut new_bits_match_seq = uid_seq.bits_match_seq.clone();
+                if (next_uid.event & bits_match.mask) == bits_match.value {
+                    // Match found, proceed to next event in sequence
+                    new_bits_match_seq.pop_front();
+                }
+                seq_queue.push_back(SeqQueueEntry {
+                    uid: next_uid,
+                    bits_match_seq: new_bits_match_seq
+                });
+            }
+        }
+    }
+
+    found_uids
+}
+
+#[macro_export]
+macro_rules! filter_seq {
+    // Single event filter
+    // 1. Generic EventType: filter_seq!(Pipeline | EventType | SrcId)
+    // i.e. `filter_seq!(MCRT | _ | MatSurfId(u16))` or `filter_seq!(Emission | Laser | LightId(u16))
+    ($pipeline:ident, $type:ident, $src_id:expr) => {{
+        use $crate::raw::{Pipeline, RawField};
+        use $crate::{filter_mcrt_seq, filter_emit_seq, filter_detect_seq};
+        use $crate::filter::BitsMatch;
+        // TODO: Check if ident is MCRT, then SrcId matches Surf, Mat or MatSurf Ids
+
+        match Pipeline::$pipeline {
+            Pipeline::Emission => {
+                let (mut mask, mut value) = filter_emit_seq!($type, $src_id);
+                mask = mask   | Pipeline::mask();
+                value = value | Pipeline::Emission.encode();
+                BitsMatch::new(mask, value)
+            },
+            Pipeline::MCRT => {
+                let (mut mask, mut value) = filter_mcrt_seq!($type, $src_id);
+                mask = mask   | Pipeline::mask();
+                value = value | Pipeline::MCRT.encode();
+                BitsMatch::new(mask, value)
+            },
+            Pipeline::Detection => {
+                let (mut mask, mut value) = filter_detect_seq!($type, $src_id);
+                mask = mask   | Pipeline::mask();
+                value = value | Pipeline::Detection.encode();
+                BitsMatch::new(mask, value)
+            },
+            _ => {
+                panic!("Unsupported pipeline type {} in filter_seq! macro", stringify!($pipeline));
+            }
+        }
+    }};
+    // 2. Super/Sub-Type: filter_seq!(Pipeline | SuperType | SubType | SrcId)
+    // i.e. `filter_seq!(MCRT | Interface | Reflection | MatSurfId(u16))` or
+    //      `filter_seq!(MCRT | Interface | _ | MatSurfId(u16))`
+    //      `filter_seq!(MCRT | Material | Absorption | MatId(u16))`
+    ($pipeline:ident, $supertype:ident, $subtype:ident, $src_id:expr) => {{
+        use $crate::raw::Pipeline;
+        use $crate::filter::{filter_mcrt_seq, filter_emit_seq, filter_detect_seq};
+        // TODO: Check if ident is MCRT, then SrcId matches Surf, Mat or MatSurf Ids
+
+        match Pipeline::$pipeline {
+            Pipeline::Emission => {
+                let (mut mask, mut value) = filter_emit_seq!($supertype, $subtype, $src_id);
+                mask  = mask  | Pipeline::mask();
+                value = value | Pipeline::Emission.encode();
+                BitsMatch::new(mask, value)
+            },
+            Pipeline::MCRT => {
+                let (mut mask, mut value) = filter_mcrt_seq!($supertype, $subtype, $src_id);
+                mask  = mask  | Pipeline::mask();
+                value = value | Pipeline::MCRT.encode();
+                BitsMatch::new(mask, value)
+            },
+            Pipeline::Detection => {
+                let (mut mask, mut value) = filter_detect_seq!($supertype, $subtype, $src_id);
+                mask  = mask  | Pipeline::mask();
+                value = value | Pipeline::Detection.encode();
+                BitsMatch::new(mask, value)
+            },
+            _ => {
+                panic!("Unsupported pipeline type {} in filter_seq! macro", stringify!($pipeline));
+            }
+        }
+    }};
+
+    // 3. Super/Sub-Type: filter_seq!(Pipeline | SuperType | SubType | Scatter | Direction | SrcId)
+    // i.e. `filter_seq!(MCRT | Material | Elastic | Mie | {Forward, Backward} | MatId)` or
+    //      `filter_seq!(MCRT | Material | Elastic | _ | _ | _)` or
+    //      `filter_seq!(MCRT | Material | _ | _ | _ | MatId(u16))` or
+    ($pipeline:ident, $supertype:ident, $subtype:ident, $scatter:ident, $dir:ident, $src_id:ident) => {{
+        use $crate::raw::{Pipeline, RawField};
+        use $crate::filter::BitsMatch;
+        use $crate::{filter_mcrt_seq, filter_emit_seq, filter_detect_seq};
+        // TODO: Check if ident is MCRT, then SrcId matches Surf, Mat or MatSurf Ids
+        eprintln!("Filtering seq: {} | {} | {} | {} | {} | {}", stringify!($pipeline), stringify!($supertype), stringify!($subtype), stringify!($scatter), stringify!($dir), stringify!($src_id));
+
+        match Pipeline::$pipeline {
+            Pipeline::Emission => {
+                let (mut mask, mut value) = filter_emit_seq!($supertype, $subtype, $scatter, $dir, $src_id);
+                mask  = mask  | Pipeline::mask();
+                value = value | Pipeline::Emission.encode();
+                BitsMatch::new(mask, value)
+            },
+            Pipeline::MCRT => {
+                let (mut mask, mut value) = filter_mcrt_seq!($supertype, $subtype, $scatter, $dir, $src_id);
+                mask  = mask  | Pipeline::mask();
+                value = value | Pipeline::MCRT.encode();
+                BitsMatch::new(mask, value)
+            },
+            Pipeline::Detection => {
+                let (mut mask, mut value) = filter_detect_seq!($supertype, $subtype, $scatter, $dir, $src_id);
+                mask  = mask  | Pipeline::mask();
+                value = value | Pipeline::Detection.encode();
+                BitsMatch::new(mask, value)
+            },
+            _ => {
+                panic!("Unsupported pipeline type {} in filter_seq! macro", stringify!($pipeline));
+            }
+        }
+    }};
+
+    // 4. TODO: Identify any sequence based on each type shift and bit size
+
+    // Sequence of event filters
+    ([ $($spec:tt),* $(,)? ]) => {
+        vec![
+            $($crate::filter_seq!($spec)),*
+        ]
+    };
+}
+
+#[macro_export]
+macro_rules! filter_mcrt_seq {
+    // 1. Generic EventType: filter_seq!(Pipeline::MCRT | EventType | SrcId)
+    ($event_type:ident, $src_id:expr) => {
+        assert!(
+            matches!($src_id, _ | SrcId::Mat(_)| SrcId::Surf(_) | SrcId::MatSurf(_)),
+            "MCRT events can only be filtered by MatId, SurfId, or MatSurfId"
+        );
+        // This format might be supported only for Custom singlet codec
+        //panic!("MCRT event filtering requires SuperType and SubType specification");
+    };
+    ($supertype:ident, $subtype:ident, $src_id:expr) => {{
+        assert!(
+            matches!($src_id, _ | SrcId::Mat(_) | SrcId::Surf(_) | SrcId::MatSurf(_)),
+            "MCRT events can only be filtered by MatId, SurfId, or MatSurfId"
+        );
+        let mut mask = raw::MCRT::mask();
+        let mut value = raw::MCRT::$supertype.encode();
+        if (stringify!($subtype) != "_") {
+            mask  |= raw::$supertype::mask();
+            value |= raw::$supertype::$subtype.encode();
+        }
+        if (stringify!($src_id) != "_") {
+            mask  |= SrcId::mask();
+            value |= $src_id.encode();
+        }
+        (mask, value)
+    }};
+    ($supertype:ident, $subtype:ident, $scatter:ident, $dir:ident, $src_id:expr) => {{
+        use $crate::raw::*;
+        assert!(
+            matches!($src_id, _ | SrcId::Mat(_) | SrcId::Surf(_) | SrcId::MatSurf(_)),
+            "MCRT events can only be filtered by MatId, SurfId, or MatSurfId"
+        );
+        let mut mask = MCRT::mask();
+        let mut value = MCRT::$supertype.encode();
+        if (stringify!($subtype) != "_") {
+            mask  |= $supertype::mask();
+            value |= $supertype::$subtype.encode();
+        }
+        if (stringify!($scatter) != "_") {
+            mask  |= $subtype::mask();
+            value |= $subtype::$scatter.encode();
+        }
+        if (stringify!($dir) != "_") {
+            mask  |= ScatterDir::mask();
+            value |= ScatterDir::$dir.encode();
+        }
+        if (stringify!($src_id) != "_") {
+            mask  |= SrcId::mask();
+            value |= (*$src_id as u32); // Fixup with encode() function
+        }
+        (mask, value)
+    }};
+}
+
+#[macro_export]
+macro_rules! filter_emit_seq {
+    // 1. Generic EventType: filter_seq!(Pipeline::MCRT | EventType | SrcId)
+    ($event_type:tt, $src_id:expr) => {{
+        assert!(matches!($src_id, _ | SrcId::Light(_)), "Emission events can only be filtered by LightId");
+
+        if stringify!($src_id) != "_" {
+            ($src_id.mask(), $src_id.encode())
+        } else {
+            (0, 0)
+        }
+    }};
+    ($supertype:ident, $subtype:ident, $scatter:ident, $dir:ident, $src_id:expr) => {
+        (0, 0)
+    };
+}
+
+#[macro_export]
+macro_rules! filter_detect_seq {
+    // 1. Generic EventType: filter_seq!(Pipeline::MCRT | EventType | SrcId)
+    ($event_type:tt , $src_id:expr) => {
+        // TODO: Complete implementation and SrcId::Detector
+        (0, 0)
+    };
+    ($supertype:ident, $subtype:ident, $scatter:ident, $dir:ident, $src_id:expr) => {
+        (0, 0)
+    };
+}

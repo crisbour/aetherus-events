@@ -2,7 +2,7 @@ pub mod raw;
 pub mod emission;
 pub mod mcrt;
 pub mod ledger;
-//mod filter;
+pub mod filter;
 
 use raw::{Pipeline, RawField};
 use serde::{Deserialize, Serialize};

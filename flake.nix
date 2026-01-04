@@ -44,6 +44,7 @@
             cargo-deny
             cargo-edit
             cargo-watch
+            cargo-expand
             rust-analyzer
           ];
 
