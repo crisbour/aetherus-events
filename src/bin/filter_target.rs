@@ -21,6 +21,9 @@ fn main() {
     let ledger: Ledger = serde_json::from_str(&json_data).expect("Unable to parse ledger file");
 
     let src_id = SrcId::Mat(42);
-    let filter = filter_seq!(MCRT, Material, Elastic, Mie, Any, src_id);
-    println!("Filter mask: {:08x}, value: {:08x}", filter.mask, filter.value);
+    let filter_seq = vec![
+        filter_seq!(MCRT, Interface, Refraction, SrcId::None),
+        filter_seq!(MCRT, Material, Elastic, Mie, Any, src_id),
+    ];
+    println!("Filter seq: {:?}", filter_seq);
 }
