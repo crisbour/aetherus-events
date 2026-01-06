@@ -12,11 +12,11 @@ use log::warn;
 // =======================================
 // Traits for encoding and decoding events
 // =======================================
-trait Encode {
+pub trait Encode {
     fn encode(&self) -> u32;
 }
 
-trait Decode {
+pub trait Decode {
     fn decode(raw: u32) -> Self where Self: Sized;
 }
 
