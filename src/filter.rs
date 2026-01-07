@@ -75,23 +75,33 @@ pub fn find_forward_uid_seq(ledger: &Ledger, bits_match_seq: Vec<BitsMatch>) -> 
     }
     while !seq_queue.is_empty() {
         let uid_seq = seq_queue.pop_front().unwrap();
-        if None == ledger.get_next_seq_id(&uid_seq.uid) {
+        if ledger.get_next(&uid_seq.uid).is_empty() {
             // If last UID in sequence of events, output as valid UID
             if uid_seq.bits_match_seq.is_empty() {
                 found_uids.push(uid_seq.uid);
             }
         } else {
-            for next_uid in ledger.get_next(&uid_seq.uid) {
-                let bits_match = uid_seq.bits_match_seq.front().unwrap();
-                let mut new_bits_match_seq = uid_seq.bits_match_seq.clone();
-                if (next_uid.event & bits_match.mask) == bits_match.value {
-                    // Match found, proceed to next event in sequence
-                    new_bits_match_seq.pop_front();
+            let next_uids = ledger.get_next(&uid_seq.uid);
+            assert!(next_uids.len() > 0, "No more subsequent events for UID: {}", uid_seq.uid);
+            for next_uid in next_uids {
+                if uid_seq.bits_match_seq.is_empty() {
+                    seq_queue.push_back(SeqQueueEntry {
+                        uid: next_uid,
+                        bits_match_seq: uid_seq.bits_match_seq.clone()
+                    });
+
+                } else {
+                    let bits_match = uid_seq.bits_match_seq.front().unwrap();
+                    let mut new_bits_match_seq = uid_seq.bits_match_seq.clone();
+                    if (next_uid.event & bits_match.mask) == bits_match.value {
+                        // Match found, proceed to next event in sequence
+                        new_bits_match_seq.pop_front();
+                    }
+                    seq_queue.push_back(SeqQueueEntry {
+                        uid: next_uid,
+                        bits_match_seq: new_bits_match_seq
+                    });
                 }
-                seq_queue.push_back(SeqQueueEntry {
-                    uid: next_uid,
-                    bits_match_seq: new_bits_match_seq
-                });
             }
         }
     }
@@ -104,6 +114,33 @@ macro_rules! filter_seq {
     // Single event filter
     // 1. Generic EventType: filter_seq!(Pipeline | EventType | SrcId)
     // i.e. `filter_seq!(MCRT | _ | MatSurfId(u16))` or `filter_seq!(Emission | Laser | LightId(u16))
+    ($pipeline:ident, $src_id:expr) => {{
+        use $crate::raw::{Pipeline, RawField};
+        use $crate::{filter_mcrt_seq, filter_emit_seq, filter_detect_seq};
+        use $crate::filter::BitsMatch;
+        // TODO: Check if ident is MCRT, then SrcId matches Surf, Mat or MatSurf Ids
+
+        match Pipeline::$pipeline {
+            Pipeline::Emission => {
+                let (mut mask, mut value) = filter_emit_seq!($src_id);
+                mask = mask   | Pipeline::mask();
+                value = value | Pipeline::Emission.encode();
+                BitsMatch::new(mask, value)
+            },
+            Pipeline::MCRT => {
+                panic!("MCRT event filtering requires SuperType and SubType specification")
+            },
+            Pipeline::Detection => {
+                let (mut mask, mut value) = filter_detect_seq!($src_id);
+                mask = mask   | Pipeline::mask();
+                value = value | Pipeline::Detection.encode();
+                BitsMatch::new(mask, value)
+            },
+            _ => {
+                panic!("Unsupported pipeline type {} in filter_seq! macro", stringify!($pipeline));
+            }
+        }
+    }};
     ($pipeline:ident, $type:ident, $src_id:expr) => {{
         use $crate::raw::{Pipeline, RawField};
         use $crate::{filter_mcrt_seq, filter_emit_seq, filter_detect_seq};
@@ -173,7 +210,7 @@ macro_rules! filter_seq {
     // i.e. `filter_seq!(MCRT | Material | Elastic | Mie | {Forward, Backward} | MatId)` or
     //      `filter_seq!(MCRT | Material | Elastic | _ | _ | _)` or
     //      `filter_seq!(MCRT | Material | _ | _ | _ | MatId(u16))` or
-    ($pipeline:ident, $supertype:ident, $subtype:ident, $scatter:ident, $dir:ident, $src_id:ident) => {{
+    ($pipeline:ident, $supertype:ident, $subtype:ident, $scatter:ident, $dir:ident, $src_id:expr) => {{
         use $crate::raw::{Pipeline, RawField};
         use $crate::filter::BitsMatch;
         use $crate::{filter_mcrt_seq, filter_emit_seq, filter_detect_seq};
@@ -282,11 +319,20 @@ macro_rules! filter_mcrt_seq {
 #[macro_export]
 macro_rules! filter_emit_seq {
     // 1. Generic EventType: filter_seq!(Pipeline::MCRT | EventType | SrcId)
+    ($src_id:expr) => {{
+        if $src_id != SrcId::None {
+            assert!(matches!($src_id,  SrcId::Light(_)), "Emission events can only be filtered by LightId");
+
+            (SrcId::mask(), *$src_id as u32)
+        } else {
+            (0, 0)
+        }
+    }};
     ($event_type:tt, $src_id:expr) => {{
         if $src_id != SrcId::None {
             assert!(matches!($src_id,  SrcId::Light(_)), "Emission events can only be filtered by LightId");
 
-            ($src_id.mask(), $src_id.encode())
+            (SrcId::mask(), *$src_id as u32)
         } else {
             (0, 0)
         }
@@ -309,7 +355,12 @@ macro_rules! filter_emit_seq {
 #[macro_export]
 macro_rules! filter_detect_seq {
     // 1. Generic EventType: filter_seq!(Pipeline::MCRT | EventType | SrcId)
-    ($event_type:tt , $src_id:expr) => {
+    ($src_id:expr) => {{
+        // TODO: Complete implementation and SrcId::Detector
+        assert!(matches!($src_id, SrcId::None), "Detection events do not have associated SrcId");
+        (0, 0)
+    }};
+    ($event_type:tt, $src_id:expr) => {
         // TODO: Complete implementation and SrcId::Detector
         (0, 0)
     };
